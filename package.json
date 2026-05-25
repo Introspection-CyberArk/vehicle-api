@@ -1,0 +1,17 @@
+{
+  "name": "vehicle-registration-api-introspection",
+  "version": "2.0.0",
+  "description": "Vehicle Registration Information API - Powered by @Introspection007",
+  "main": "api/vehicle.js",
+  "type": "module",
+  "keywords": ["vehicle", "rto", "rc", "registration", "india", "parivahan"],
+  "author": "@Introspection007",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  }
+}
