@@ -213,34 +213,43 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_r
 # VERCEL SERVERLESS HANDLER
 # ============================================
 
+# This is the key fix - Vercel needs a top-level async function named 'handler'
+# or an object with a 'handler' method.
+
 async def handler(request):
-    """Vercel serverless function handler"""
+    """Main Vercel serverless function handler."""
     try:
         logger.info("📨 Request received")
         
-        # Parse body
-        body = await request.json() if request.method == "POST" else {}
+        # Parse the incoming request body
+        body = await request.json() if hasattr(request, 'json') else {}
         logger.info(f"Body: {str(body)[:200]}...")
         
-        # Create update
+        # Create a Telegram Update object from the request body
         update = Update.de_json(body, application.bot)
         
-        # Process
+        # Process the update through the application
         await application.process_update(update)
-        logger.info("✅ Update processed")
+        logger.info("✅ Update processed successfully")
         
-        return {"statusCode": 200, "body": "OK"}
-        
+        # Return a success response
+        return {
+            "statusCode": 200,
+            "body": "OK",
+            "headers": {
+                "Content-Type": "text/plain"
+            }
+        }
     except Exception as e:
         logger.error(f"❌ Handler error: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {"statusCode": 500, "body": str(e)}
+        return {
+            "statusCode": 500,
+            "body": f"Internal Server Error: {str(e)}"
+        }
 
-# ============================================
-# LOCAL TESTING
-# ============================================
-
+# For local testing
 if __name__ == "__main__":
     logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
     logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
