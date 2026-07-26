@@ -1,15 +1,18 @@
+"""
+Vehicle OSINT Bot - Vercel Serverless Handler
+Powered By @Introspection007
+"""
+
 import os
 import sys
 import json
 import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import re
+from typing import Dict, Any
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils.scraper import get_comprehensive_vehicle_details
-from utils.formatter import VehicleDataFormatter
+# Setup path for imports
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
 
 # Setup logging
 logging.basicConfig(
@@ -19,48 +22,62 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# GET BOT TOKEN - MULTIPLE METHODS
+# GET BOT TOKEN
 # ============================================
 
-def get_bot_token():
-    """Try multiple ways to get bot token"""
+def get_bot_token() -> str:
+    """Get bot token from environment"""
+    token = (
+        os.environ.get("BOT_TOKEN") or
+        os.environ.get("bot_token") or
+        os.environ.get("VERCEL_BOT_TOKEN") or
+        os.environ.get("TELEGRAM_BOT_TOKEN")
+    )
     
-    # Method 1: Direct from environment
-    token = os.environ.get("BOT_TOKEN")
     if token:
-        logger.info("✅ BOT_TOKEN found in environment")
+        logger.info(f"✅ BOT_TOKEN found (length: {len(token)})")
         return token
     
-    # Method 2: From Vercel's process.env
-    token = os.environ.get("bot_token")
-    if token:
-        logger.info("✅ bot_token found in environment (lowercase)")
-        return token
-    
-    # Method 3: From Vercel's secrets (if using vercel.json secrets)
-    # Vercel injects secrets as environment variables with specific naming
-    token = os.environ.get("BOT_TOKEN", os.environ.get("bot_token", os.environ.get("VERCEL_BOT_TOKEN")))
-    if token:
-        logger.info("✅ BOT_TOKEN found via fallback")
-        return token
-    
-    # Method 4: Hardcoded fallback (ONLY FOR TESTING - REMOVE IN PRODUCTION)
-    # token = "YOUR_BOT_TOKEN_HERE"  # Uncomment for testing
-    
-    logger.error("❌ BOT_TOKEN not found in environment")
-    return None
+    raise ValueError("❌ BOT_TOKEN not found in any source")
 
 # Get token
-BOT_TOKEN = get_bot_token()
+try:
+    BOT_TOKEN = get_bot_token()
+    logger.info("✅ Bot token loaded successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to get BOT_TOKEN: {e}")
+    raise
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set")
+# ============================================
+# IMPORTS (After path setup)
+# ============================================
 
-# Log token start (for debugging)
-logger.info(f"BOT_TOKEN loaded: {BOT_TOKEN[:10]}... (length: {len(BOT_TOKEN)})")
+try:
+    from telegram import Update
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    logger.info("✅ Telegram module loaded")
+except ImportError as e:
+    logger.error(f"❌ Failed to import telegram: {e}")
+    raise
 
-# Create application
-application = Application.builder().token(BOT_TOKEN).build()
+try:
+    from utils.scraper import get_vehicle_details
+    from utils.formatter import VehicleDataFormatter
+    logger.info("✅ Utils module loaded")
+except ImportError as e:
+    logger.error(f"❌ Failed to import utils: {e}")
+    raise
+
+# ============================================
+# CREATE APPLICATION
+# ============================================
+
+try:
+    application = Application.builder().token(BOT_TOKEN).build()
+    logger.info("✅ Application created successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to create application: {e}")
+    raise
 
 # ============================================
 # COMMAND HANDLERS
@@ -142,7 +159,6 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text.strip().upper()
     
     # Validate format
-    import re
     rc_pattern = r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$'
     if not re.match(rc_pattern, user_message):
         await update.message.reply_text(
@@ -159,7 +175,7 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Fetch vehicle details
-        data = get_comprehensive_vehicle_details(user_message)
+        data = get_vehicle_details(user_message)
         
         if data.get("error"):
             await update.message.reply_text(
@@ -173,7 +189,6 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         formatter = VehicleDataFormatter()
         response = formatter.format_vehicle_details(data)
         
-        # Send response
         await update.message.reply_text(response, parse_mode="Markdown")
         
     except Exception as e:
@@ -201,23 +216,32 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_r
 async def handler(request):
     """Vercel serverless function handler"""
     try:
-        # Parse incoming request
-        body = await request.json() if request.method == "POST" else {}
+        logger.info("📨 Request received")
         
-        # Create update object
+        # Parse body
+        body = await request.json() if request.method == "POST" else {}
+        logger.info(f"Body: {str(body)[:200]}...")
+        
+        # Create update
         update = Update.de_json(body, application.bot)
         
-        # Process update
+        # Process
         await application.process_update(update)
+        logger.info("✅ Update processed")
         
         return {"statusCode": 200, "body": "OK"}
         
     except Exception as e:
-        logger.error(f"Handler error: {e}")
+        logger.error(f"❌ Handler error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {"statusCode": 500, "body": str(e)}
 
-# For local testing
+# ============================================
+# LOCAL TESTING
+# ============================================
+
 if __name__ == "__main__":
-    print("🚀 Starting Vehicle OSINT Bot...")
-    print(f"Using token: {BOT_TOKEN[:10]}...")
+    logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
+    logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
     application.run_polling()
