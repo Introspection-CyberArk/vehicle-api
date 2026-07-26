@@ -1,14 +1,18 @@
 """
-Vehicle OSINT Bot - Vercel Serverless Handler (HTTP Handler)
+Vehicle OSINT Bot - Flask API for Vercel
 Powered By @Introspection007
 """
 
 import os
+import sys
 import json
 import logging
 import re
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, jsonify
+
+# Setup path for imports
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -40,9 +44,6 @@ except Exception as e:
 # IMPORTS
 # ============================================
 
-# We'll import these only when needed to avoid import errors during build
-# if the dependencies aren't installed yet.
-
 try:
     from telegram import Update
     from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -51,19 +52,13 @@ try:
     logger.info("✅ All modules loaded successfully")
 except ImportError as e:
     logger.error(f"❌ Failed to import modules: {e}")
-    # This will fail gracefully at runtime if dependencies aren't installed
+    # We'll handle this gracefully
 
 # ============================================
-# CREATE APPLICATION (if token exists)
+# CREATE FLASK APP
 # ============================================
 
-application = None
-if BOT_TOKEN:
-    try:
-        application = Application.builder().token(BOT_TOKEN).build()
-        logger.info("✅ Telegram application created successfully")
-    except Exception as e:
-        logger.error(f"❌ Failed to create application: {e}")
+app = Flask(__name__)
 
 # ============================================
 # TELEGRAM BOT COMMAND HANDLERS
@@ -186,77 +181,76 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-# Register handlers if application exists
-if application:
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("about", about))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rc_number))
-
 # ============================================
-# VERCEL HTTP HANDLER
+# CREATE TELEGRAM APPLICATION
 # ============================================
 
-class handler(BaseHTTPRequestHandler):
-    """
-    Vercel HTTP handler for the Python runtime.
-    This is the entry point Vercel will look for.
-    """
-    
-    def do_GET(self):
-        """Handle GET requests"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        response = {
-            "status": "online",
-            "service": "Vehicle OSINT Bot",
-            "message": "Bot is running. Send POST requests for webhook updates."
+telegram_app = None
+if BOT_TOKEN:
+    try:
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("help", help_command))
+        telegram_app.add_handler(CommandHandler("about", about))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rc_number))
+        logger.info("✅ Telegram application created successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to create Telegram application: {e}")
+
+# ============================================
+# FLASK ROUTES
+# ============================================
+
+@app.route('/', methods=['GET'])
+def home():
+    """Home endpoint"""
+    return jsonify({
+        "status": "online",
+        "service": "Vehicle OSINT Bot",
+        "version": "1.0",
+        "endpoints": {
+            "webhook": "/webhook",
+            "health": "/health"
         }
-        self.wfile.write(json.dumps(response).encode('utf-8'))
-    
-    def do_POST(self):
-        """Handle POST requests (Telegram webhook)"""
-        try:
-            # Get content length
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
-            body = json.loads(post_data.decode('utf-8'))
-            
-            logger.info(f"📨 Webhook received: {str(body)[:200]}...")
-            
-            # Process the update if application exists
-            if application and body:
-                update = Update.de_json(body, application.bot)
-                # Run the async update processing
-                import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(application.process_update(update))
-                loop.close()
-                logger.info("✅ Update processed successfully")
-            else:
-                logger.warning("⚠️ Application not initialized or empty body")
-            
-            # Send success response
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
-            
-        except Exception as e:
-            logger.error(f"❌ Handler error: {e}")
-            self.send_response(500)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode('utf-8'))
-    
-    def do_OPTIONS(self):
-        """Handle OPTIONS requests"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
-        self.wfile.write(b'{}')
+    })
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "bot_token_loaded": bool(BOT_TOKEN),
+        "telegram_app_loaded": bool(telegram_app)
+    })
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Telegram webhook endpoint"""
+    try:
+        # Get the incoming request body
+        body = request.get_json()
+        logger.info(f"📨 Webhook received: {str(body)[:200]}...")
+        
+        if not telegram_app:
+            logger.error("❌ Telegram app not initialized")
+            return jsonify({"status": "error", "message": "Bot not initialized"}), 500
+        
+        # Create update object
+        update = Update.de_json(body, telegram_app.bot)
+        
+        # Process the update
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(telegram_app.process_update(update))
+        loop.close()
+        
+        logger.info("✅ Update processed successfully")
+        return jsonify({"status": "ok"}), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Webhook error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================
 # LOCAL TESTING
@@ -266,8 +260,12 @@ if __name__ == "__main__":
     if BOT_TOKEN:
         logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
         logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
-        # For local testing, run the polling
-        if application:
-            application.run_polling()
+        # For local testing, run polling OR Flask
+        import sys
+        if '--webhook' in sys.argv:
+            app.run(debug=True, port=5000)
+        else:
+            if telegram_app:
+                telegram_app.run_polling()
     else:
         logger.error("❌ Cannot start bot: BOT_TOKEN not set")
