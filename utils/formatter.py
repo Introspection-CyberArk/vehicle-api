@@ -1,6 +1,7 @@
 """
 Vehicle OSINT Bot - Formatter Module
 Formats vehicle data for Telegram display
+Powered By @Introspection007
 """
 
 import re
@@ -44,6 +45,8 @@ class VehicleDataFormatter:
             ("vehicle_age", "⏳ *Age:* "),
             ("seating_capacity", "💺 *Seating:* "),
             ("cubic_capacity", "🔧 *Engine CC:* "),
+            ("rto", "🏢 *RTO:* "),
+            ("financer", "🏦 *Financer:* "),
         ]
         
         for key, label in fields:
@@ -60,13 +63,30 @@ class VehicleDataFormatter:
             
             if insurance.get("company"):
                 response += f"🏢 *Company:* {insurance['company']}\n"
+            if insurance.get("policy_number"):
+                response += f"📄 *Policy:* `{insurance['policy_number']}`\n"
             if insurance.get("expiry_date"):
                 response += f"📅 *Expiry:* {insurance['expiry_date']}\n"
         
         # PUC Details
         puc = data.get("puc_details", {})
-        if puc and puc.get("puc_valid_upto"):
-            response += f"🔍 *PUC Valid:* {puc['puc_valid_upto']}\n"
+        if puc:
+            if puc.get("puc_number"):
+                response += f"🔍 *PUC Number:* {puc['puc_number']}\n"
+            if puc.get("puc_valid_upto"):
+                response += f"📅 *PUC Valid:* {puc['puc_valid_upto']}\n"
+        
+        # Validity
+        validity = data.get("validity", {})
+        if validity:
+            if validity.get("fitness_upto"):
+                response += f"✅ *Fitness Upto:* {validity['fitness_upto']}\n"
+            if validity.get("tax_upto"):
+                response += f"💵 *Tax Upto:* {validity['tax_upto']}\n"
+        
+        # Blacklist Status
+        if data.get("blacklist_status") and data.get("blacklist_status") != "NA":
+            response += f"⚠️ *Blacklist:* {data['blacklist_status']}\n"
         
         # Footer
         response += f"\n━━━━━━━━━━━━━━━━━━━━━\n⚡ @Introspection007"
@@ -181,33 +201,6 @@ Always verify official documents.
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚡ @Introspection007"""
-    
-    @staticmethod
-    def format_loading(rc_number: str) -> str:
-        """Format loading/processing message"""
-        return f"🔍 *Fetching details for:* `{rc_number}`\n\n⏳ Please wait..."
-    
-    @staticmethod
-    def format_success() -> str:
-        """Format success message"""
-        return "✅ *Details fetched successfully!*"
-    
-    @staticmethod
-    def format_no_results(rc_number: str) -> str:
-        """Format no results message"""
-        return f"""❌ *No Results Found*
-
-Could not fetch details for: `{rc_number}`
-
-Possible reasons:
-• Invalid RC number
-• Number not registered
-• Database error
-
-Please verify and try again.
-
-━━━━━━━━━━━━━━━━━━━━━
-⚡ @Introspection007"""
 
 
 # ============================================
@@ -286,38 +279,3 @@ def get_insurance_emoji(status: str) -> str:
         return "⚠️"
     else:
         return "❓"
-
-# ============================================
-# TABLE FORMATTER (Optional - For /stats)
-# ============================================
-
-class TableFormatter:
-    """Format data as a table for Telegram"""
-    
-    @staticmethod
-    def format_table(headers: list, rows: list) -> str:
-        """Format data as a simple table"""
-        if not rows:
-            return "No data available"
-        
-        # Calculate column widths
-        col_widths = [len(h) for h in headers]
-        for row in rows:
-            for i, cell in enumerate(row):
-                if i < len(col_widths):
-                    col_widths[i] = max(col_widths[i], len(str(cell)))
-        
-        # Build table
-        result = []
-        
-        # Header
-        header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
-        result.append(header_line)
-        result.append("-" * len(header_line))
-        
-        # Rows
-        for row in rows:
-            row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
-            result.append(row_line)
-        
-        return "```\n" + "\n".join(result) + "\n```"
