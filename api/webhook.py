@@ -1,24 +1,17 @@
 """
-Vehicle OSINT Bot - Vercel Serverless Handler
+Vehicle OSINT Bot - Vercel Serverless Handler (HTTP Handler)
 Powered By @Introspection007
 """
 
 import os
-import sys
 import json
 import logging
 import re
-from typing import Dict, Any
-
-# Setup path for imports
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE_DIR)
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 # Setup logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================
@@ -30,57 +23,50 @@ def get_bot_token() -> str:
     token = (
         os.environ.get("BOT_TOKEN") or
         os.environ.get("bot_token") or
-        os.environ.get("VERCEL_BOT_TOKEN") or
-        os.environ.get("TELEGRAM_BOT_TOKEN")
+        os.environ.get("VERCEL_BOT_TOKEN")
     )
-    
     if token:
         logger.info(f"✅ BOT_TOKEN found (length: {len(token)})")
         return token
-    
     raise ValueError("❌ BOT_TOKEN not found in any source")
 
-# Get token
 try:
     BOT_TOKEN = get_bot_token()
-    logger.info("✅ Bot token loaded successfully")
 except Exception as e:
     logger.error(f"❌ Failed to get BOT_TOKEN: {e}")
-    raise
+    BOT_TOKEN = None
 
 # ============================================
-# IMPORTS (After path setup)
+# IMPORTS
 # ============================================
+
+# We'll import these only when needed to avoid import errors during build
+# if the dependencies aren't installed yet.
 
 try:
     from telegram import Update
     from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-    logger.info("✅ Telegram module loaded")
-except ImportError as e:
-    logger.error(f"❌ Failed to import telegram: {e}")
-    raise
-
-try:
     from utils.scraper import get_vehicle_details
     from utils.formatter import VehicleDataFormatter
-    logger.info("✅ Utils module loaded")
+    logger.info("✅ All modules loaded successfully")
 except ImportError as e:
-    logger.error(f"❌ Failed to import utils: {e}")
-    raise
+    logger.error(f"❌ Failed to import modules: {e}")
+    # This will fail gracefully at runtime if dependencies aren't installed
 
 # ============================================
-# CREATE APPLICATION
+# CREATE APPLICATION (if token exists)
 # ============================================
 
-try:
-    application = Application.builder().token(BOT_TOKEN).build()
-    logger.info("✅ Application created successfully")
-except Exception as e:
-    logger.error(f"❌ Failed to create application: {e}")
-    raise
+application = None
+if BOT_TOKEN:
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("✅ Telegram application created successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to create application: {e}")
 
 # ============================================
-# COMMAND HANDLERS
+# TELEGRAM BOT COMMAND HANDLERS
 # ============================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,57 +186,88 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-# ============================================
-# REGISTER HANDLERS
-# ============================================
-
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(CommandHandler("about", about))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rc_number))
+# Register handlers if application exists
+if application:
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rc_number))
 
 # ============================================
-# VERCEL SERVERLESS HANDLER
+# VERCEL HTTP HANDLER
 # ============================================
 
-# This is the key fix - Vercel needs a top-level async function named 'handler'
-# or an object with a 'handler' method.
-
-async def handler(request):
-    """Main Vercel serverless function handler."""
-    try:
-        logger.info("📨 Request received")
-        
-        # Parse the incoming request body
-        body = await request.json() if hasattr(request, 'json') else {}
-        logger.info(f"Body: {str(body)[:200]}...")
-        
-        # Create a Telegram Update object from the request body
-        update = Update.de_json(body, application.bot)
-        
-        # Process the update through the application
-        await application.process_update(update)
-        logger.info("✅ Update processed successfully")
-        
-        # Return a success response
-        return {
-            "statusCode": 200,
-            "body": "OK",
-            "headers": {
-                "Content-Type": "text/plain"
-            }
+class handler(BaseHTTPRequestHandler):
+    """
+    Vercel HTTP handler for the Python runtime.
+    This is the entry point Vercel will look for.
+    """
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            "status": "online",
+            "service": "Vehicle OSINT Bot",
+            "message": "Bot is running. Send POST requests for webhook updates."
         }
-    except Exception as e:
-        logger.error(f"❌ Handler error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "statusCode": 500,
-            "body": f"Internal Server Error: {str(e)}"
-        }
+        self.wfile.write(json.dumps(response).encode('utf-8'))
+    
+    def do_POST(self):
+        """Handle POST requests (Telegram webhook)"""
+        try:
+            # Get content length
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            body = json.loads(post_data.decode('utf-8'))
+            
+            logger.info(f"📨 Webhook received: {str(body)[:200]}...")
+            
+            # Process the update if application exists
+            if application and body:
+                update = Update.de_json(body, application.bot)
+                # Run the async update processing
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(application.process_update(update))
+                loop.close()
+                logger.info("✅ Update processed successfully")
+            else:
+                logger.warning("⚠️ Application not initialized or empty body")
+            
+            # Send success response
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
+            
+        except Exception as e:
+            logger.error(f"❌ Handler error: {e}")
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode('utf-8'))
+    
+    def do_OPTIONS(self):
+        """Handle OPTIONS requests"""
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'{}')
 
-# For local testing
+# ============================================
+# LOCAL TESTING
+# ============================================
+
 if __name__ == "__main__":
-    logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
-    logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
-    application.run_polling()
+    if BOT_TOKEN:
+        logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
+        logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
+        # For local testing, run the polling
+        if application:
+            application.run_polling()
+    else:
+        logger.error("❌ Cannot start bot: BOT_TOKEN not set")
