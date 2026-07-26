@@ -1,5 +1,5 @@
 """
-Vehicle OSINT Bot - Flask API for Vercel
+Vehicle OSINT Bot - Flask API for Vercel (FIXED)
 Powered By @Introspection007
 """
 
@@ -8,6 +8,7 @@ import sys
 import json
 import logging
 import re
+import asyncio
 from flask import Flask, request, jsonify
 
 # Setup path for imports
@@ -32,7 +33,7 @@ def get_bot_token() -> str:
     if token:
         logger.info(f"✅ BOT_TOKEN found (length: {len(token)})")
         return token
-    raise ValueError("❌ BOT_TOKEN not found in any source")
+    raise ValueError("❌ BOT_TOKEN not found")
 
 try:
     BOT_TOKEN = get_bot_token()
@@ -52,7 +53,7 @@ try:
     logger.info("✅ All modules loaded successfully")
 except ImportError as e:
     logger.error(f"❌ Failed to import modules: {e}")
-    # We'll handle this gracefully
+    # Don't raise, let the app handle it gracefully
 
 # ============================================
 # CREATE FLASK APP
@@ -61,10 +62,12 @@ except ImportError as e:
 app = Flask(__name__)
 
 # ============================================
-# TELEGRAM BOT COMMAND HANDLERS
+# TELEGRAM BOT COMMAND HANDLERS (SYNC VERSION)
 # ============================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# We'll use sync handlers to avoid async issues on Vercel
+
+def handle_start(update, context):
     """Handle /start command"""
     welcome = """🚗 *Vehicle OSINT Bot*
 
@@ -91,9 +94,9 @@ Simply send me a vehicle registration number like:
 
 ⚡ Powered By @Introspection007"""
     
-    await update.message.reply_text(welcome, parse_mode="Markdown")
+    update.message.reply_text(welcome, parse_mode="Markdown")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_help(update, context):
     """Handle /help command"""
     help_text = """📖 *Vehicle OSINT Bot Help*
 
@@ -113,9 +116,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 *Need support?*
 Contact: @Introspection007"""
     
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    update.message.reply_text(help_text, parse_mode="Markdown")
 
-async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_about(update, context):
     """Handle /about command"""
     about_text = """🤖 *Vehicle OSINT Bot*
 
@@ -133,16 +136,16 @@ This bot uses public data sources. Use responsibly.
 
 ⚡ Powered By @Introspection007"""
     
-    await update.message.reply_text(about_text, parse_mode="Markdown")
+    update.message.reply_text(about_text, parse_mode="Markdown")
 
-async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_rc_number(update, context):
     """Process RC number and return vehicle details"""
     user_message = update.message.text.strip().upper()
     
     # Validate format
     rc_pattern = r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$'
     if not re.match(rc_pattern, user_message):
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ *Invalid RC Number Format*\n\n"
             "Please send a valid registration number in this format:\n"
             "`DL01AB1234`\n\n"
@@ -151,15 +154,12 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Send typing indicator
-    await update.message.chat.send_action(action="typing")
-    
     try:
         # Fetch vehicle details
         data = get_vehicle_details(user_message)
         
         if data.get("error"):
-            await update.message.reply_text(
+            update.message.reply_text(
                 f"❌ *Error*\n\n{data['error']}\n\n"
                 "Please check the RC number and try again.",
                 parse_mode="Markdown"
@@ -170,11 +170,11 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         formatter = VehicleDataFormatter()
         response = formatter.format_vehicle_details(data)
         
-        await update.message.reply_text(response, parse_mode="Markdown")
+        update.message.reply_text(response, parse_mode="Markdown")
         
     except Exception as e:
         logger.error(f"Error processing RC: {e}")
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ *Error*\n\n"
             "Something went wrong. Please try again later.\n\n"
             "If the problem persists, contact @Introspection007",
@@ -182,20 +182,28 @@ async def handle_rc_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # ============================================
-# CREATE TELEGRAM APPLICATION
+# CREATE TELEGRAM APPLICATION (SYNC)
 # ============================================
 
 telegram_app = None
 if BOT_TOKEN:
     try:
+        # Use the sync version of the application
+        from telegram.ext import Updater
+        
+        # Create application with sync handlers
         telegram_app = Application.builder().token(BOT_TOKEN).build()
-        telegram_app.add_handler(CommandHandler("start", start))
-        telegram_app.add_handler(CommandHandler("help", help_command))
-        telegram_app.add_handler(CommandHandler("about", about))
+        
+        # Add handlers (sync versions)
+        telegram_app.add_handler(CommandHandler("start", handle_start))
+        telegram_app.add_handler(CommandHandler("help", handle_help))
+        telegram_app.add_handler(CommandHandler("about", handle_about))
         telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_rc_number))
+        
         logger.info("✅ Telegram application created successfully")
     except Exception as e:
         logger.error(f"❌ Failed to create Telegram application: {e}")
+        telegram_app = None
 
 # ============================================
 # FLASK ROUTES
@@ -225,11 +233,11 @@ def health():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Telegram webhook endpoint"""
+    """Telegram webhook endpoint - SYNC VERSION for Vercel"""
     try:
         # Get the incoming request body
         body = request.get_json()
-        logger.info(f"📨 Webhook received: {str(body)[:200]}...")
+        logger.info(f"📨 Webhook received")
         
         if not telegram_app:
             logger.error("❌ Telegram app not initialized")
@@ -238,18 +246,16 @@ def webhook():
         # Create update object
         update = Update.de_json(body, telegram_app.bot)
         
-        # Process the update
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(telegram_app.process_update(update))
-        loop.close()
+        # Process the update - SYNC version
+        telegram_app.process_update(update)
         
         logger.info("✅ Update processed successfully")
         return jsonify({"status": "ok"}), 200
         
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================================
@@ -260,12 +266,6 @@ if __name__ == "__main__":
     if BOT_TOKEN:
         logger.info("🚀 Starting Vehicle OSINT Bot (Local)...")
         logger.info(f"BOT_TOKEN: {BOT_TOKEN[:10]}...")
-        # For local testing, run polling OR Flask
-        import sys
-        if '--webhook' in sys.argv:
-            app.run(debug=True, port=5000)
-        else:
-            if telegram_app:
-                telegram_app.run_polling()
+        app.run(debug=True, port=5000)
     else:
         logger.error("❌ Cannot start bot: BOT_TOKEN not set")
