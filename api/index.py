@@ -1,5 +1,5 @@
 """
-Vehicle OSINT Bot - Flask API for Vercel (DEBUG VERSION)
+Vehicle OSINT Bot - Full Version
 Powered By @Introspection007
 """
 
@@ -7,11 +7,12 @@ import os
 import sys
 import json
 import logging
-import traceback
+import re
+import requests
 from flask import Flask, request, jsonify
 
 # Setup logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================
@@ -20,10 +21,16 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN not found in environment!")
+    logger.error("❌ BOT_TOKEN not found!")
     BOT_TOKEN = None
-else:
-    logger.info(f"✅ BOT_TOKEN found (length: {len(BOT_TOKEN)})")
+
+# ============================================
+# RAPIDAPI CONFIG
+# ============================================
+
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "212fbc324fmsh0bc26391652a8acp11e9dfjsn8e204268a7f4")
+RAPIDAPI_HOST = "vehicle-rc-verification-advanced.p.rapidapi.com"
+API_BASE_URL = "https://vehicle-rc-verification-advanced.p.rapidapi.com"
 
 # ============================================
 # CREATE FLASK APP
@@ -32,112 +39,201 @@ else:
 app = Flask(__name__)
 
 # ============================================
-# SIMPLE TEST ENDPOINTS
+# HELPER FUNCTIONS
+# ============================================
+
+def get_vehicle_details(rc_number):
+    """Fetch vehicle details from RapidAPI"""
+    rc = rc_number.strip().upper()
+    
+    endpoints = [
+        f"/v1/vehicle/rc/{rc}",
+        f"/api/vehicle/{rc}",
+        f"/rc/{rc}"
+    ]
+    
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST,
+        "Content-Type": "application/json"
+    }
+    
+    for endpoint in endpoints:
+        url = f"{API_BASE_URL}{endpoint}"
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "success": True,
+                    "data": data,
+                    "registration_number": rc
+                }
+        except:
+            continue
+    
+    return {"success": False, "error": "Vehicle not found"}
+
+def send_telegram_message(chat_id, text):
+    """Send a message via Telegram API"""
+    if not BOT_TOKEN:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown"
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        return response.status_code == 200
+    except:
+        return False
+
+def format_vehicle_info(data):
+    """Format vehicle data for Telegram"""
+    if not data.get("success"):
+        return "❌ *Vehicle not found*\n\nPlease check the RC number and try again."
+    
+    info = data.get("data", {})
+    rc = data.get("registration_number", "Unknown")
+    
+    # Extract fields
+    owner = info.get("ownerName") or info.get("owner_name") or "N/A"
+    model = info.get("modelName") or info.get("model") or "N/A"
+    make = info.get("make") or info.get("maker") or "N/A"
+    city = info.get("city") or info.get("city_name") or "N/A"
+    fuel = info.get("fuelType") or info.get("fuel_type") or "N/A"
+    reg_date = info.get("registrationDate") or info.get("reg_date") or "N/A"
+    
+    insurance = info.get("insuranceStatus") or info.get("insurance_status") or "N/A"
+    
+    message = f"""🚗 *Vehicle Details*
+📋 *RC:* `{rc}`
+
+👤 *Owner:* {owner}
+🚙 *Model:* {model}
+🏭 *Make:* {make}
+📍 *City:* {city}
+⛽ *Fuel:* {fuel}
+📆 *Registration:* {reg_date}
+🛡️ *Insurance:* {insurance}
+
+━━━━━━━━━━━━━━━━━━━━━
+⚡ @Introspection007"""
+    
+    return message
+
+# ============================================
+# FLASK ROUTES
 # ============================================
 
 @app.route('/', methods=['GET'])
 def home():
-    """Home endpoint"""
     return jsonify({
         "status": "online",
         "service": "Vehicle OSINT Bot",
-        "version": "1.0-debug",
-        "bot_token_loaded": bool(BOT_TOKEN),
+        "version": "2.0",
         "endpoints": {
             "webhook": "/webhook",
-            "health": "/health",
-            "test": "/test"
+            "health": "/health"
         }
     })
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
         "bot_token_loaded": bool(BOT_TOKEN)
     })
 
-@app.route('/test', methods=['GET'])
-def test():
-    """Test endpoint to verify bot token"""
-    if not BOT_TOKEN:
-        return jsonify({"error": "BOT_TOKEN not set"}), 500
-    
-    try:
-        import requests
-        response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=10)
-        return jsonify({
-            "token_valid": response.status_code == 200,
-            "response": response.json() if response.status_code == 200 else None,
-            "status_code": response.status_code
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Telegram webhook endpoint - DEBUG VERSION"""
+    """Main webhook handler"""
     try:
-        # Log the request
-        logger.info("=" * 50)
-        logger.info("📨 Webhook received")
-        
-        # Get the incoming request body
         body = request.get_json()
-        logger.info(f"Body: {json.dumps(body)[:500]}...")
+        logger.info(f"📨 Webhook received")
         
         if not BOT_TOKEN:
-            logger.error("❌ BOT_TOKEN not set")
-            return jsonify({"status": "error", "message": "BOT_TOKEN not set"}), 500
+            return jsonify({"error": "BOT_TOKEN not set"}), 500
         
-        # Test import telegram
-        try:
-            from telegram import Update
-            logger.info("✅ telegram imported")
-        except ImportError as e:
-            logger.error(f"❌ telegram import error: {e}")
-            return jsonify({"status": "error", "message": f"Import error: {str(e)}"}), 500
+        from telegram import Update
         
-        # Create update object
         update = Update.de_json(body, None)
-        logger.info(f"✅ Update created: {update}")
         
-        # Simple response for testing
-        if update.message and update.message.text:
-            user_message = update.message.text
-            logger.info(f"User message: {user_message}")
+        if not update or not update.message:
+            return jsonify({"status": "ok"}), 200
+        
+        chat_id = update.message.chat.id
+        user_message = update.message.text.strip()
+        
+        # Handle /start
+        if user_message == "/start":
+            welcome = """🚗 *Vehicle OSINT Bot*
+
+Send me any Indian vehicle registration number to get details!
+
+*Example:* `MH48AS2241`
+
+*Commands:*
+/start - This message
+/help - Help
+
+⚡ Powered By @Introspection007"""
+            send_telegram_message(chat_id, welcome)
+            return jsonify({"status": "ok"}), 200
+        
+        # Handle /help
+        if user_message == "/help":
+            help_text = """📖 *How to use:*
+
+Simply send a vehicle registration number like:
+`MH48AS2241` or `DL01AB1234`
+
+The bot will fetch and display:
+• Owner name
+• Vehicle model
+• Make
+• City
+• Fuel type
+• Registration date
+• Insurance status
+
+⚡ Powered By @Introspection007"""
+            send_telegram_message(chat_id, help_text)
+            return jsonify({"status": "ok"}), 200
+        
+        # Check if it's an RC number
+        rc_pattern = r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$'
+        if re.match(rc_pattern, user_message.upper()):
+            # Send typing indicator
+            send_telegram_message(chat_id, "🔍 *Fetching vehicle details...*")
             
-            # Send a simple reply
-            try:
-                import requests
-                reply_text = f"✅ Bot is working! You said: {user_message}"
-                send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                send_data = {
-                    "chat_id": update.message.chat.id,
-                    "text": reply_text
-                }
-                response = requests.post(send_url, json=send_data, timeout=10)
-                logger.info(f"✅ Reply sent: {response.status_code}")
-            except Exception as e:
-                logger.error(f"❌ Failed to send reply: {e}")
+            # Get vehicle info
+            result = get_vehicle_details(user_message)
+            
+            # Format and send response
+            response = format_vehicle_info(result)
+            send_telegram_message(chat_id, response)
+            
+            return jsonify({"status": "ok"}), 200
         
-        logger.info("✅ Webhook processed successfully")
+        # Unknown command
+        send_telegram_message(
+            chat_id,
+            "❌ *Unknown command*\n\nSend a vehicle number like `MH48AS2241` or use /help"
+        )
+        
         return jsonify({"status": "ok"}), 200
         
     except Exception as e:
         logger.error(f"❌ Webhook error: {e}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            "status": "error",
-            "message": str(e),
-            "traceback": traceback.format_exc()
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 # ============================================
 # LOCAL TESTING
 # ============================================
 
 if __name__ == "__main__":
-    logger.info("🚀 Starting DEBUG bot...")
+    logger.info("🚀 Starting Vehicle OSINT Bot...")
     app.run(debug=True, port=5000)
